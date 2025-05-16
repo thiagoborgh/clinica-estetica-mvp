@@ -1,4 +1,4 @@
-document.getElementById('agendamento-form').addEventListener('submit', function(event) {
+document.getElementById('agendamento-form').addEventListener('submit', async function(event) {
     event.preventDefault(); // Impede o formulário de recarregar a página
 
     const nome = document.getElementById('nome').value;
@@ -7,6 +7,16 @@ document.getElementById('agendamento-form').addEventListener('submit', function(
     const data = document.getElementById('data').value;
     const horario = document.getElementById('horario').value;
 
-    const mensagem = `Agendamento confirmado! ${nome}, seu ${servico} está marcado para ${data} às ${horario}. Contato: ${telefone}.`;
-    document.getElementById('mensagem').textContent = mensagem;
+    try {
+        const response = await fetch('http://localhost:3000/agendamentos', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nome, telefone, servico, data, horario })
+        });
+        const result = await response.json();
+        document.getElementById('mensagem').textContent = result.mensagem;
+    } catch (error) {
+        document.getElementById('mensagem').textContent = 'Erro ao enviar agendamento.';
+        console.error(error);
+    }
 });
