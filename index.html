@@ -32,11 +32,18 @@
                 <option value="peeling">Peeling</option>
             </select>
 
+            <label for="profissional">Profissional:</label>
+            <select id="profissional" name="profissional" required>
+                <option value="">Selecione um profissional</option>
+            </select>
+
             <label for="data">Data:</label>
             <input type="date" id="data" name="data" required>
 
             <label for="horario">Horário:</label>
-            <input type="time" id="horario" name="horario" required>
+            <select id="horario" name="horario" required>
+                <option value="">Selecione um horário</option>
+            </select>
 
             <button type="submit">Agendar</button>
         </form>
