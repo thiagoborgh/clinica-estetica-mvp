@@ -11,6 +11,7 @@
         <img src="https://via.placeholder.com/150x50?text=Logo" alt="Logo da Clínica" class="logo">
         <h1>Clínica de Estética</h1>
         <p>Agende seu horário agora!</p>
+        <a href="cadastrar-profissional.html">Cadastrar Profissional</a>
     </header>
     <main>
         <form id="agendamento-form">
@@ -20,21 +21,14 @@
             <label for="telefone">Telefone:</label>
             <input type="tel" id="telefone" name="telefone" pattern="[0-9]{10,11}" placeholder="Ex.: 11987654321" required>
 
-            <label for="servico">Serviço:</label>
-            <select id="servico" name="servico" required>
-                <option value="">Selecione um serviço</option>
-                <option value="massagem">Massagem</option>
-                <option value="limpeza">Limpeza de Pele</option>
-                <option value="manicure">Manicure</option>
-                <option value="botox">Botox</option>
-                <option value="depilacao">Depilação</option>
-                <option value="hidratacao">Hidratação Facial</option>
-                <option value="peeling">Peeling</option>
-            </select>
-
             <label for="profissional">Profissional:</label>
             <select id="profissional" name="profissional" required>
                 <option value="">Selecione um profissional</option>
+            </select>
+
+            <label for="servico">Serviço:</label>
+            <select id="servico" name="servico" required>
+                <option value="">Selecione um serviço</option>
             </select>
 
             <label for="data">Data:</label>

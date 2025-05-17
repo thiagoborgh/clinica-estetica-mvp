@@ -68,12 +68,12 @@ button:hover {
     font-weight: bold;
 }
 
-#lista-agendamentos {
+#lista-agendamentos, #lista-profissionais {
     list-style: none;
     padding: 0;
 }
 
-#lista-agendamentos li {
+#lista-agendamentos li, #lista-profissionais li {
     padding: 10px;
     border-bottom: 1px solid #ccc;
     display: flex;
@@ -103,9 +103,27 @@ button:hover {
     background-color: #c82333;
 }
 
+#servicos-checkboxes, #grade-horario {
+    margin-bottom: 15px;
+}
+
+#servicos-checkboxes label, #grade-horario label {
+    display: block;
+    margin-bottom: 5px;
+}
+
+#grade-horario div {
+    margin-bottom: 10px;
+}
+
+#grade-horario input[type="time"] {
+    width: 120px;
+    margin-left: 10px;
+}
+
 a {
     display: inline-block;
-    margin-top: 10px;
+    margin: 10px 5px;
     color: #28a745;
     text-decoration: none;
 }
