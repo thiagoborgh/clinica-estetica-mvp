@@ -1,299 +1,241 @@
 const express = require('express');
+const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
-const db = require('./database');
+
 const app = express();
+const port = 3000;
 
 // Middleware
-app.use(cors({ origin: 'http://localhost:5173' }));
 app.use(express.json());
+app.use(cors());
 
-// Função para verificar conflitos de horário
-function verificarConflito(data, horario, profissional_id, id = null, callback) {
-    const query = id
-        ? `SELECT * FROM agendamentos WHERE data = ? AND horario = ? AND profissional_id = ? AND id != ?`
-        : `SELECT * FROM agendamentos WHERE data = ? AND horario = ? AND profissional_id = ?`;
-    const params = id ? [data, horario, profissional_id, id] : [data, horario, profissional_id];
-
-    db.get(query, params, (err, row) => {
-        if (err) {
-            callback(err);
-        } else {
-            callback(null, !!row);
-        }
-    });
-}
-
-// Função para obter horários disponíveis com base na grade
-function getHorariosDisponiveis(data, profissional_id, callback) {
-    // Converter data para dia da semana
-    const date = new Date(data);
-    const diasSemana = ['domingo', 'segunda', 'terca', 'quarta', 'quinta', 'sexta', 'sabado'];
-    const diaSemana = diasSemana[date.getDay()];
-
-    // Buscar grade do profissional
-    db.get(
-        `SELECT horario_inicio, horario_fim FROM profissional_grades WHERE profissional_id = ? AND dia_semana = ?`,
-        [profissional_id, diaSemana],
-        (err, grade) => {
-            if (err || !grade) {
-                callback(err || new Error('Profissional não disponível neste dia'));
-                return;
-            }
-
-            // Gerar horários de hora em hora
-            const horarios = [];
-            let [inicioH, inicioM] = grade.horario_inicio.split(':').map(Number);
-            const [fimH, fimM] = grade.horario_fim.split(':').map(Number);
-
-            while (inicioH < fimH || (inicioH === fimH && inicioM < fimM)) {
-                horarios.push(`${inicioH.toString().padStart(2, '0')}:00`);
-                inicioH++;
-            }
-
-            // Buscar horários ocupados
-            db.all(
-                `SELECT horario FROM agendamentos WHERE data = ? AND profissional_id = ?`,
-                [data, profissional_id],
-                (err, rows) => {
-                    if (err) {
-                        callback(err);
-                        return;
-                    }
-                    const horariosOcupados = rows.map(row => row.horario);
-                    const horariosDisponiveis = horarios.filter(horario => !horariosOcupados.includes(horario));
-                    callback(null, horariosDisponiveis);
-                }
-            );
-        }
-    );
-}
-
-// Rota para cadastrar profissional
-app.post('/profissionais', (req, res) => {
-    const { nome, servicos, grade } = req.body;
-
-    if (!nome || !servicos || servicos.length === 0 || !grade || grade.length === 0) {
-        return res.status(400).json({ erro: 'Nome, serviços e grade são obrigatórios' });
-    }
-
-    db.run(`INSERT INTO profissionais (nome) VALUES (?)`, [nome], function (err) {
-        if (err) {
-            return res.status(500).json({ erro: 'Erro ao cadastrar profissional' });
-        }
-        const profissional_id = this.lastID;
-
-        // Inserir serviços
-        const stmtServicos = db.prepare(`INSERT INTO profissional_servicos (profissional_id, servico) VALUES (?, ?)`);
-        servicos.forEach(servico => stmtServicos.run([profissional_id, servico]));
-        stmtServicos.finalize();
-
-        // Inserir grade
-        const stmtGrade = db.prepare(`INSERT INTO profissional_grades (profissional_id, dia_semana, horario_inicio, horario_fim) VALUES (?, ?, ?, ?)`);
-        grade.forEach(({ dia_semana, horario_inicio, horario_fim }) => {
-            stmtGrade.run([profissional_id, dia_semana, horario_inicio, horario_fim]);
-        });
-        stmtGrade.finalize();
-
-        res.json({ mensagem: `Profissional ${nome} cadastrado com sucesso!`, id: profissional_id });
-    });
+// Conectar ao banco de dados
+const db = new sqlite3.Database('./agendamentos.db', (err) => {
+  if (err) {
+    console.error('Erro ao conectar ao banco de dados:', err.message);
+  } else {
+    console.log('Conectado ao banco de dados agendamentos.db');
+    // Criar tabela de profissionais
+    db.run(`
+      CREATE TABLE IF NOT EXISTS profissionais (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nome TEXT NOT NULL,
+        servicos TEXT NOT NULL,
+        grade TEXT NOT NULL
+      )
+    `);
+    // Criar tabela de agendamentos
+    db.run(`
+      CREATE TABLE IF NOT EXISTS agendamentos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cliente TEXT NOT NULL,
+        profissionalId INTEGER NOT NULL,
+        servico TEXT NOT NULL,
+        data TEXT NOT NULL,
+        horario TEXT NOT NULL,
+        FOREIGN KEY (profissionalId) REFERENCES profissionais(id)
+      )
+    `);
+  }
 });
 
 // Rota para listar profissionais
 app.get('/profissionais', (req, res) => {
-    db.all(
-        `SELECT p.id, p.nome, 
-                GROUP_CONCAT(ps.servico) AS servicos,
-                (SELECT GROUP_CONCAT(dia_semana || ':' || horario_inicio || '-' || horario_fim) 
-                 FROM profissional_grades pg 
-                 WHERE pg.profissional_id = p.id) AS grade
-         FROM profissionais p
-         LEFT JOIN profissional_servicos ps ON p.id = ps.profissional_id
-         GROUP BY p.id`,
-        [],
-        (err, rows) => {
-            if (err) {
-                return res.status(500).json({ erro: 'Erro ao buscar profissionais' });
-            }
-            const profissionais = rows.map(row => ({
-                id: row.id,
-                nome: row.nome,
-                servicos: row.servicos ? row.servicos.split(',') : [],
-                grade: row.grade ? row.grade.split(',').map(g => {
-                    const [dia_semana, horarios] = g.split(':');
-                    const [horario_inicio, horario_fim] = horarios.split('-');
-                    return { dia_semana, horario_inicio, horario_fim };
-                }) : []
-            }));
-            res.json(profissionais);
-        }
-    );
+  db.all('SELECT * FROM profissionais', [], (err, rows) => {
+    if (err) {
+      res.status(500).json({ erro: 'Erro ao listar profissionais' });
+      console.error(err.message);
+      return;
+    }
+    res.json(rows);
+  });
 });
 
-// Rota para obter serviços por profissional
-app.get('/profissional-servicos/:id', (req, res) => {
-    const { id } = req.params;
-    db.all(
-        `SELECT servico FROM profissional_servicos WHERE profissional_id = ?`,
-        [id],
-        (err, rows) => {
-            if (err) {
-                return res.status(500).json({ erro: 'Erro ao buscar serviços' });
-            }
-            res.json(rows.map(row => row.servico));
-        }
-    );
-});
+// Rota para cadastrar profissional
+app.post('/profissionais', (req, res) => {
+  const { nome, servicos, grade } = req.body;
+  console.log('Dados recebidos no POST:', req.body);
 
-// Rota para obter horários disponíveis
-app.get('/horarios-disponiveis', (req, res) => {
-    const { data, profissional_id } = req.query;
+  try {
+    const servicosArray = typeof servicos === 'string' ? JSON.parse(servicos) : servicos;
+    const gradeArray = typeof grade === 'string' ? JSON.parse(grade) : grade;
 
-    if (!data || !profissional_id) {
-        return res.status(400).json({ erro: 'Data e profissional são obrigatórios' });
+    if (!nome || !servicosArray || !Array.isArray(servicosArray) || !gradeArray || !Array.isArray(gradeArray)) {
+      return res.status(400).json({ erro: 'Dados inválidos' });
     }
 
-    getHorariosDisponiveis(data, profissional_id, (err, horarios) => {
-        if (err) {
-            return res.status(400).json({ erro: err.message });
-        }
-        res.json(horarios);
+    const stmt = db.prepare('INSERT INTO profissionais (nome, servicos, grade) VALUES (?, ?, ?)');
+    stmt.run(nome, JSON.stringify(servicosArray), JSON.stringify(gradeArray), function(err) {
+      if (err) {
+        res.status(500).json({ erro: 'Erro ao cadastrar profissional' });
+        console.error(err.message);
+        return;
+      }
+      res.json({ mensagem: `Profissional ${nome} cadastrado com sucesso!`, id: this.lastID });
     });
+    stmt.finalize();
+  } catch (error) {
+    res.status(400).json({ erro: 'Erro ao processar dados JSON' });
+    console.error('Erro ao parsear JSON:', error.message);
+  }
 });
 
-// Rota para criar agendamento
+// Rota para atualizar profissional
+app.put('/profissionais/:id', (req, res) => {
+  const { id } = req.params;
+  const { nome, servicos, grade } = req.body;
+  console.log('Dados recebidos no PUT:', req.body);
+
+  try {
+    const servicosArray = typeof servicos === 'string' ? JSON.parse(servicos) : servicos;
+    const gradeArray = typeof grade === 'string' ? JSON.parse(grade) : grade;
+
+    if (!nome || !servicosArray || !Array.isArray(servicosArray) || !gradeArray || !Array.isArray(gradeArray)) {
+      return res.status(400).json({ erro: 'Dados inválidos' });
+    }
+
+    const stmt = db.prepare('UPDATE profissionais SET nome = ?, servicos = ?, grade = ? WHERE id = ?');
+    stmt.run(nome, JSON.stringify(servicosArray), JSON.stringify(gradeArray), id, (err) => {
+      if (err) {
+        res.status(500).json({ erro: 'Erro ao atualizar profissional' });
+        console.error(err.message);
+        return;
+      }
+      const mensagem = { mensagem: `Profissional ${nome} atualizado com sucesso!` };
+      console.log('Resposta enviada ao front-end:', mensagem); // Adicione este log
+      res.json(mensagem);
+    });
+    stmt.finalize();
+  } catch (error) {
+    res.status(400).json({ erro: 'Erro ao processar dados JSON' });
+    console.error('Erro ao parsear JSON:', error.message);
+  }
+});
+
+// Rota para excluir profissional
+app.delete('/profissionais/:id', (req, res) => {
+  const { id } = req.params;
+  db.run('DELETE FROM profissionais WHERE id = ?', id, (err) => {
+    if (err) {
+      res.status(500).json({ erro: 'Erro ao excluir profissional' });
+      console.error(err.message);
+      return;
+    }
+    res.json({ mensagem: 'Profissional excluído com sucesso!' });
+  });
+});
+
+// Rota para cadastrar agendamento
 app.post('/agendamentos', (req, res) => {
-    const { nome, telefone, servico, data, horario, profissional_id } = req.body;
+  const { cliente, profissionalId, servico, data, horario } = req.body;
+  console.log('Dados recebidos no POST /agendamentos:', req.body);
 
-    if (!nome || !telefone || !servico || !data || !horario || !profissional_id) {
-        return res.status(400).json({ erro: 'Todos os campos são obrigatórios' });
+  if (!cliente || !profissionalId || !servico || !data || !horario) {
+    return res.status(400).json({ erro: 'Dados inválidos' });
+  }
+
+  const stmt = db.prepare('INSERT INTO agendamentos (cliente, profissionalId, servico, data, horario) VALUES (?, ?, ?, ?, ?)');
+  stmt.run(cliente, profissionalId, servico, data, horario, function(err) {
+    if (err) {
+      res.status(500).json({ erro: 'Erro ao cadastrar agendamento' });
+      console.error(err.message);
+      return;
     }
-
-    // Validar data futura
-    const hoje = new Date().toISOString().split('T')[0];
-    if (data < hoje) {
-        return res.status(400).json({ erro: 'A data deve ser futura' });
-    }
-
-    // Validar se o serviço é oferecido pelo profissional
-    db.get(
-        `SELECT * FROM profissional_servicos WHERE profissional_id = ? AND servico = ?`,
-        [profissional_id, servico],
-        (err, row) => {
-            if (err || !row) {
-                return res.status(400).json({ erro: 'Serviço não oferecido por este profissional' });
-            }
-
-            verificarConflito(data, horario, profissional_id, null, (err, conflito) => {
-                if (err) {
-                    return res.status(500).json({ erro: 'Erro ao verificar conflito' });
-                }
-                if (conflito) {
-                    return res.status(400).json({ erro: 'Horário já ocupado' });
-                }
-
-                db.run(
-                    `INSERT INTO agendamentos (nome, telefone, servico, data, horario, profissional_id) VALUES (?, ?, ?, ?, ?, ?)`,
-                    [nome, telefone, servico, data, horario, profissional_id],
-                    function (err) {
-                        if (err) {
-                            return res.status(500).json({ erro: 'Erro ao salvar agendamento' });
-                        }
-                        res.json({ mensagem: `Agendamento confirmado para ${nome}!`, id: this.lastID });
-                    }
-                );
-            });
-        }
-    );
+    res.json({ mensagem: `Agendamento para ${cliente} cadastrado com sucesso!`, id: this.lastID });
+  });
+  stmt.finalize();
 });
 
 // Rota para listar agendamentos
 app.get('/agendamentos', (req, res) => {
-    const { profissional_id } = req.query;
-    const query = profissional_id
-        ? `SELECT a.*, p.nome AS profissional_nome 
-           FROM agendamentos a 
-           JOIN profissionais p ON a.profissional_id = p.id 
-           WHERE a.profissional_id = ?`
-        : `SELECT a.*, p.nome AS profissional_nome 
-           FROM agendamentos a 
-           JOIN profissionais p ON a.profissional_id = p.id`;
-    const params = profissional_id ? [profissional_id] : [];
-
-    db.all(query, params, (err, rows) => {
-        if (err) {
-            return res.status(500).json({ erro: 'Erro ao buscar agendamentos' });
-        }
-        res.json(rows);
-    });
-});
-
-// Rota para atualizar agendamento
-app.put('/agendamentos/:id', (req, res) => {
-    const { nome, telefone, servico, data, horario, profissional_id } = req.body;
-    const { id } = req.params;
-
-    if (!nome || !telefone || !servico || !data || !horario || !profissional_id) {
-        return res.status(400).json({ erro: 'Todos os campos são obrigatórios' });
+  db.all('SELECT * FROM agendamentos', [], (err, rows) => {
+    if (err) {
+      res.status(500).json({ erro: 'Erro ao listar agendamentos' });
+      console.error(err.message);
+      return;
     }
-
-    // Validar data futura
-    const hoje = new Date().toISOString().split('T')[0];
-    if (data < hoje) {
-        return res.status(400).json({ erro: 'A data deve ser futura' });
-    }
-
-    // Validar se o serviço é oferecido pelo profissional
-    db.get(
-        `SELECT * FROM profissional_servicos WHERE profissional_id = ? AND servico = ?`,
-        [profissional_id, servico],
-        (err, row) => {
-            if (err || !row) {
-                return res.status(400).json({ erro: 'Serviço não oferecido por este profissional' });
-            }
-
-            verificarConflito(data, horario, profissional_id, id, (err, conflito) => {
-                if (err) {
-                    return res.status(500).json({ erro: 'Erro ao verificar conflito' });
-                }
-                if (conflito) {
-                    return res.status(400).json({ erro: 'Horário já ocupado' });
-                }
-
-                db.run(
-                    `UPDATE agendamentos SET nome = ?, telefone = ?, servico = ?, data = ?, horario = ?, profissional_id = ? WHERE id = ?`,
-                    [nome, telefone, servico, data, horario, profissional_id, id],
-                    function (err) {
-                        if (err) {
-                            return res.status(500).json({ erro: 'Erro ao atualizar agendamento' });
-                        }
-                        if (this.changes === 0) {
-                            return res.status(404).json({ erro: 'Agendamento não encontrado' });
-                        }
-                        res.json({ mensagem: `Agendamento atualizado com sucesso!` });
-                    }
-                );
-            });
-        }
-    );
+    res.json(rows);
+  });
 });
 
 // Rota para excluir agendamento
 app.delete('/agendamentos/:id', (req, res) => {
-    const { id } = req.params;
-
-    db.run(`DELETE FROM agendamentos WHERE id = ?`, [id], function (err) {
-        if (err) {
-            return res.status(500).json({ erro: 'Erro ao excluir agendamento' });
-        }
-        if (this.changes === 0) {
-            return res.status(404).json({ erro: 'Agendamento não encontrado' });
-        }
-        res.json({ mensagem: 'Agendamento excluído com sucesso!' });
-    });
+  const { id } = req.params;
+  db.run('DELETE FROM agendamentos WHERE id = ?', id, (err) => {
+    if (err) {
+      res.status(500).json({ erro: 'Erro ao excluir agendamento' });
+      console.error(err.message);
+      return;
+    }
+    res.json({ mensagem: 'Agendamento excluído com sucesso!' });
+  });
 });
 
-// Iniciar o servidor
-const PORT = 3000;
-app.listen(PORT, () => {
-    console.log(`Servidor rodando na porta ${PORT}`);
+//Rota para buscar profissional por ID
+app.get('/profissional-servicos/:id', (req, res) => {
+  const { id } = req.params;
+  db.get('SELECT servicos FROM profissionais WHERE id = ?', [id], (err, row) => {
+    if (err) {
+      res.status(500).json({ erro: 'Erro ao buscar serviços' });
+      console.error(err.message);
+      return;
+    }
+    if (!row) {
+      res.status(404).json({ erro: 'Profissional não encontrado' });
+      return;
+    }
+    try {
+      const servicos = typeof row.servicos === 'string' ? JSON.parse(row.servicos) : row.servicos;
+      res.json(servicos);
+    } catch (error) {
+      res.status(500).json({ erro: 'Erro ao parsear serviços' });
+      console.error('Erro ao parsear JSON:', error.message);
+    }
+  });
+});
+
+//rota horario disponiveis
+app.get('/horarios-disponiveis', (req, res) => {
+  const { data, 'profissional-id': profissionalId } = req.query;
+  if (!data || !profissionalId) {
+    return res.status(400).json({ erro: 'Parâmetros inválidos' });
+  }
+
+  db.get('SELECT grade FROM profissionais WHERE id = ?', [profissionalId], (err, row) => {
+    if (err) {
+      res.status(500).json({ erro: 'Erro ao buscar grade' });
+      console.error(err.message);
+      return;
+    }
+    if (!row) {
+      res.status(404).json({ erro: 'Profissional não encontrado' });
+      return;
+    }
+
+    try {
+      const grade = typeof row.grade === 'string' ? JSON.parse(row.grade) : row.grade;
+      const diaSelecionado = new Date(data).toLocaleString('pt-BR', { weekday: 'long' }).toLowerCase();
+      const gradeDia = grade.find(g => g.dia_semana === diaSelecionado);
+
+      if (!gradeDia) {
+        return res.json([]);
+      }
+
+      const inicio = parseInt(gradeDia.horario_inicio.split(':')[0]);
+      const fim = parseInt(gradeDia.horario_fim.split(':')[0]);
+      const horarios = [];
+      for (let hora = inicio; hora < fim; hora++) {
+        horarios.push(`${hora.toString().padStart(2, '0')}:00`);
+      }
+      res.json(horarios);
+    } catch (error) {
+      res.status(500).json({ erro: 'Erro ao parsear grade' });
+      console.error('Erro ao parsear JSON:', error.message);
+    }
+  });
+});
+
+// Iniciar servidor
+app.listen(port, () => {
+  console.log(`Servidor rodando em http://localhost:${port}`);
 });
